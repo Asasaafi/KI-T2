@@ -9,8 +9,8 @@ Keduanya saling mengirim dan menerima pesan terenkripsi secara bergantian (vice 
 
 ## Struktur File
 
-client_des.py : program sisi client
-server_des.py : program sisi server
+- client_des.py : program sisi client
+- server_des.py : program sisi server
 
 ## Cara Menjalankan
 
@@ -26,5 +26,4 @@ python server_des.py
 Untuk device client
 ````
 python client_des.py
-````
 ````
