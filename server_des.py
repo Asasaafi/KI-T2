@@ -1,80 +1,67 @@
 import socket
-import threading
-from crypto_utils import key_hex_to_bytes, encrypt_des_cbc, decrypt_des_cbc, to_hex, from_hex
-import struct
+import base64
+import os
+from Crypto.Cipher import DES
+from Crypto.Util.Padding import pad, unpad
 
-def send_payload(conn, iv, ciphertext):
-    """Kirim data dengan header panjang 2 byte"""
-    payload = iv + ciphertext
-    header = struct.pack('!H', len(payload))
-    conn.sendall(header + payload)
+BIND_ADDR = ('192.168.142.46', 65489)
+KEY = b'mysecret'
 
-def recv_payload(conn):
-    """Terima data dan pecah menjadi (iv, ciphertext)"""
-    header = conn.recv(2)
-    if not header:
-        return None, None
-    (length,) = struct.unpack('!H', header)
-    payload = conn.recv(length)
-    if not payload:
-        return None, None
-    iv = payload[:8]
-    ciphertext = payload[8:]
-    return iv, ciphertext
+def des_encrypt(msg, mode, iv=None):
+    des = DES.new(KEY, DES.MODE_CBC, iv) if mode == 'CBC' else DES.new(KEY, DES.MODE_ECB)
+    return base64.b64encode(des.encrypt(pad(msg.encode(), DES.block_size))).decode()
 
-def handle_receive(conn, key):
-    """Thread untuk menerima pesan terenkripsi dari client"""
-    while True:
-        try:
-            iv, ciphertext = recv_payload(conn)
-            if not iv:
-                print("Client terputus.")
-                break
-            plaintext = decrypt_des_cbc(key, iv, ciphertext)
-            print(f"\n[Client]: {plaintext.decode()}")
-        except Exception as e:
-            print("Terjadi kesalahan saat menerima:", e)
-            break
+def des_decrypt(enc, mode, iv=None):
+    des = DES.new(KEY, DES.MODE_CBC, iv) if mode == 'CBC' else DES.new(KEY, DES.MODE_ECB)
+    return unpad(des.decrypt(base64.b64decode(enc)), DES.block_size).decode()
 
-def main():
-    host = input("Masukkan host: ") or "0.0.0.0"
-    port = int(input("Masukkan port (default 9000): ") or "9000")
-    hexkey = input("Masukkan key DES (16 hex chars): ")
-    key = key_hex_to_bytes(hexkey)
+def serve():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # ini penting agar tidak error
+        server.bind(BIND_ADDR)
+        server.listen(1)
+        print(f"Server berjalan di {BIND_ADDR[0]}:{BIND_ADDR[1]}")
+        print("Menunggu koneksi dari client...")
 
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.bind((host, port))
-    server.listen(1)
-    print(f"Menunggu koneksi di {host}:{port} ...")
-
-    try:
         conn, addr = server.accept()
-        print("Terhubung dengan:", addr)
+        print(f"Tersambung dari {addr}")
 
-        while True:
-            data = conn.recv(4096)
-            if not data:
-                break
+        with conn:
+            mode = conn.recv(64).decode().strip()
+            print(f"Mode komunikasi: {mode}")
 
-            iv_hex, ct_hex = data.decode().split("|")
-            iv = from_hex(iv_hex)
-            ct = from_hex(ct_hex)
-            plaintext = decrypt_des_cbc(key, iv, ct).decode()
-            print("Client:", plaintext)
+            while True:
+                data = conn.recv(4096)
+                if not data:
+                    print("Client keluar.")
+                    break
 
-            msg = input("Server: ").encode()
-            iv, ct = encrypt_des_cbc(key, msg)
-            conn.send(f"{to_hex(iv)}|{to_hex(ct)}".encode())
+                lines = dict(line.split("=", 1) for line in data.decode().split("\n") if "=" in line)
+                iv_in = None if lines.get("IV") == "-" else base64.b64decode(lines.get("IV"))
+                plain_in = des_decrypt(lines.get("DATA"), lines.get("MODE"), iv_in)
 
-    except KeyboardInterrupt:
-        print("\n[!] Server dihentikan oleh pengguna.")
-    finally:
-        try:
-            conn.close()
-        except:
-            pass
-        server.close()
-        print("Koneksi ditutup.")
+                print("\nPesan diterima:")
+                print(f"Teks Asli      : {lines.get('PLAIN')}")
+                print(f"Terenkripsi    : {lines.get('DATA')}")
+                if mode == "CBC":
+                    print(f"IV             : {lines.get('IV')}")
+                print(f"Hasil Dekripsi : {plain_in}")
+
+                reply_text = input("Balasan: ")
+                if reply_text.lower() == "exit":
+                    print("Koneksi ditutup oleh server.")
+                    break
+
+                iv_out = os.urandom(8) if mode == 'CBC' else None
+                reply_cipher = des_encrypt(reply_text, mode, iv_out)
+
+                response = "\n".join([
+                    f"MODE={mode}",
+                    f"IV={base64.b64encode(iv_out).decode() if iv_out else '-'}",
+                    f"DATA={reply_cipher}",
+                    f"PLAIN={reply_text}"
+                ])
+                conn.send(response.encode())
 
 if __name__ == "__main__":
-    main()
+    serve()
